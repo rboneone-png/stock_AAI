@@ -1,0 +1,3 @@
+-keep class androidx.work.** { *; }
+-keep class com.stockai.app.work.** { *; }
+-dontwarn org.json.**
