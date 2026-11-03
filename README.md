@@ -23,6 +23,7 @@ gradle :app:testDebugUnitTest      # 單元測試（對照 Python 結果、資�
 簽章：本機以 `keystore.properties`（不在版控內）簽章；沒有時退回 debug 金鑰。
 CI 預設用 debug 金鑰；若要固定簽章，請在 Settings → Secrets and variables → Actions 新增
 `KEYSTORE_BASE64`（`base64 -w0 your.jks`）、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`。
+可用 `scripts/set-signing-secrets.sh <金鑰.jks> <keystore.properties>` 一次設定（需 `gh auth login`）。每次編譯的摘要頁會顯示 APK 的簽章 SHA-256，固定簽章時應該每次都相同。
 **金鑰請自行備份**，遺失後無法以同一簽章更新已安裝的 App。
 
 ## 目錄

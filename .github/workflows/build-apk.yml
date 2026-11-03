@@ -50,6 +50,15 @@ jobs:
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk StockAI.apk
 
+      # 在執行摘要顯示簽章指紋：固定簽章時，每次編譯的指紋都應相同
+      - name: Show signing certificate
+        run: |
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          FP=$("$APKSIGNER" verify --print-certs StockAI.apk | grep "SHA-256 digest" | head -1 | sed 's/.*: //')
+          if [ -f keystore.properties ]; then MODE="你的發行金鑰（固定簽章）"; else MODE="debug 金鑰（未設定 Secrets）"; fi
+          echo "簽章：$MODE"; echo "SHA-256：$FP"
+          { echo "### APK 簽章"; echo "- 金鑰：$MODE"; echo "- SHA-256：\`$FP\`"; } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: StockAI-apk
