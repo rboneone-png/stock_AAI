@@ -9,6 +9,7 @@ import com.stockai.app.data.SearchHit
 import com.stockai.app.data.Sources
 import com.stockai.app.engine.Analysis
 import com.stockai.app.store.AlertEvent
+import com.stockai.app.store.Portable
 import com.stockai.app.store.Settings
 import com.stockai.app.store.Store
 import com.stockai.app.store.Summary
@@ -94,8 +95,7 @@ class MainViewModel @JvmOverloads constructor(app: Application, autoRefresh: Boo
 
     fun refreshAll() = refresh(items.value)
 
-    private fun dedupeKey(sym: String) =
-        if (Sources.marketOf(sym) == "tw") "TW:" + Sources.twCode(sym) else sym.uppercase()
+    private fun dedupeKey(sym: String) = Portable.key(sym)
 
     /** 新增自選股；回傳 false 代表已存在。 */
     fun addStock(symbol: String, name: String = ""): Boolean {
@@ -119,6 +119,65 @@ class MainViewModel @JvmOverloads constructor(app: Application, autoRefresh: Boo
         analyses.update { it - symbol }
         errors.update { it - symbol }
         if (selected.value == symbol) selected.value = null
+    }
+
+    // ---------------------------------------------------------------- 手動排序
+    /** 把清單中第 [from] 檔移到第 [to] 的位置（手動排序模式下的清單順序就是顯示順序）。 */
+    fun moveStock(from: Int, to: Int) {
+        synchronized(lock) {
+            val cur = items.value
+            if (from !in cur.indices || to !in cur.indices || from == to) return
+            items.value = cur.toMutableList().also { it.add(to, it.removeAt(from)) }
+            store.saveWatchlist(items.value)
+        }
+    }
+
+    /** 進入手動排序：先把目前畫面上的順序（例如依評分）固定成清單順序，再切到手動模式。 */
+    fun beginManualOrder(displayOrder: List<WatchItem>) {
+        synchronized(lock) {
+            val known = items.value.map { it.symbol }.toSet()
+            val ordered = displayOrder.filter { it.symbol in known }
+            val rest = items.value.filter { i -> ordered.none { it.symbol == i.symbol } }
+            items.value = ordered + rest
+            store.saveWatchlist(items.value)
+        }
+        if (settings.value.sort != "manual") updateSettings { it.copy(sort = "manual") }
+    }
+
+    // ---------------------------------------------------------------- 匯入 / 匯出
+    fun exportJson(includeSettings: Boolean): String =
+        Portable.exportJson(items.value, if (includeSettings) settings.value else null, System.currentTimeMillis())
+
+    fun exportCsv(): String = Portable.exportCsv(items.value)
+
+    /** 套用匯入結果，回傳給使用者看的摘要。新加入的股票會立刻開始分析。 */
+    fun applyImport(parsed: Portable.Parsed, replace: Boolean, withSettings: Boolean): String {
+        val r: Portable.MergeResult
+        synchronized(lock) {
+            r = Portable.merge(items.value, parsed.items, replace)
+            items.value = r.items
+            store.saveWatchlist(r.items)
+            if (r.removed.isNotEmpty()) {
+                val gone = r.removed.map { it.symbol }.toSet()
+                summaries.update { it - gone }; store.saveState(summaries.value)
+                analyses.update { it - gone }; errors.update { it - gone }
+                if (selected.value in gone) selected.value = null
+            }
+        }
+        var settingsNote = ""
+        val imported = parsed.settings
+        if (withSettings && imported != null) {
+            // API 金鑰不會被匯出，匯入時保留本機原有的金鑰
+            updateSettings { cur -> imported.copy(finmindToken = cur.finmindToken, alphaKey = cur.alphaKey) }
+            settingsNote = "，並套用設定"
+        }
+        refresh(r.added)
+        return buildString {
+            append(if (replace) "已取代清單：共 ${r.items.size} 檔" else "已加入 ${r.added.size} 檔")
+            if (!replace && r.duplicates > 0) append("（${r.duplicates} 檔已存在）")
+            if (replace && r.removed.isNotEmpty()) append("（移除 ${r.removed.size} 檔）")
+            append(settingsNote)
+        }
     }
 
     fun updateSettings(f: (Settings) -> Settings) {

@@ -16,6 +16,10 @@ import com.stockai.app.store.WatchItem
 import com.stockai.app.ui.MainViewModel
 import com.stockai.app.ui.StockAiApp
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertFalse
+import androidx.compose.ui.test.performTouchInput
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -29,6 +33,13 @@ import java.time.LocalDate
 @Config(sdk = [34], application = Application::class, qualifiers = "w411dp-h891dp-xxhdpi")
 class UiTest {
     @get:Rule val rule = createAndroidComposeRule<androidx.activity.ComponentActivity>()
+
+    @org.junit.Before fun initWorkManager() {
+        // 測試用的是一般 Application；正式 App 由 WorkManager 自動初始化
+        try {
+            androidx.work.WorkManager.initialize(ApplicationProvider.getApplicationContext(), androidx.work.Configuration.Builder().build())
+        } catch (_: IllegalStateException) { /* 已初始化 */ }
+    }
 
     private val out = File(System.getProperty("java.io.tmpdir"), "stockai-shots").also { it.mkdirs() }
 
@@ -107,5 +118,66 @@ class UiTest {
         rule.setContent { StockAiApp(vm) {} }
         rule.onNodeWithText("新增股票", useUnmergedTree = true).performClick(); settle(); shot("2_add")
         assertTrue(rule.onAllNodesWithText("熱門台股").fetchSemanticsNodes().isNotEmpty())
+    }
+
+    private fun order(vm: MainViewModel) = vm.items.value.map { it.symbol }
+
+    @Test fun reorderWithButtons() {
+        val vm = newVm()
+        vm.updateSettings { it.copy(sort = "manual") }
+        rule.setContent { StockAiApp(vm) {} }
+        rule.onNodeWithTag("more").performClick(); settle()
+        rule.onNodeWithText("調整順序（拖曳排序）", useUnmergedTree = true).performClick(); settle()
+        shot("11_reorder")
+        assertTrue(rule.onAllNodesWithText("調整順序").fetchSemanticsNodes().isNotEmpty())
+        val before = order(vm)
+        rule.onNodeWithTag("down_${before[0]}").performClick(); settle()
+        assertEquals(listOf(before[1], before[0]) + before.drop(2), order(vm))
+        rule.onNodeWithTag("up_${before[3]}").performClick(); settle()
+        assertEquals(listOf(before[1], before[0], before[3], before[2]), order(vm))
+        // 清單順序有寫進儲存空間
+        val saved = com.stockai.app.store.Store(ApplicationProvider.getApplicationContext()).loadWatchlist().map { it.symbol }
+        assertEquals(order(vm), saved)
+    }
+
+    @Test fun reorderWithDrag() {
+        val vm = newVm()
+        rule.setContent { StockAiApp(vm) {} }
+        rule.onNodeWithTag("more").performClick(); settle()
+        rule.onNodeWithText("調整順序（拖曳排序）", useUnmergedTree = true).performClick(); settle()
+        // 進入排序模式時，原本「依評分」的順序會先被固定成手動順序：評分最高的在最上面
+        assertEquals("manual", vm.settings.value.sort)
+        val before = order(vm)
+        assertEquals("AAPL", before[0]) // 依評分：AAPL(-1) 高於 2330(-36)
+        val first = before[0]
+        rule.onNodeWithTag("handle_$first").performTouchInput {
+            down(center); moveBy(androidx.compose.ui.geometry.Offset(0f, 40f)); moveBy(androidx.compose.ui.geometry.Offset(0f, 200f)); up()
+        }
+        settle()
+        val after = order(vm)
+        assertEquals(before.toSet(), after.toSet())
+        assertTrue("拖曳後順序應改變：$before → $after", after != before)
+        assertNotEquals(first, after[0])
+    }
+
+    @Test fun beginManualOrderFreezesCurrentDisplayOrder() {
+        val vm = newVm()
+        val display = vm.items.value.reversed()
+        vm.beginManualOrder(display)
+        assertEquals(display.map { it.symbol }, order(vm))
+        assertEquals("manual", vm.settings.value.sort)
+    }
+
+    @Test fun applyImportReplaceAndMergeWithoutNewStocks() {
+        val vm = newVm()
+        val cur = order(vm)
+        // 檔案內容都是現有股票：只調整順序與移除，不會觸發網路分析
+        val p = com.stockai.app.store.Portable.Parsed(listOf(WatchItem("NVDA", ""), WatchItem("AAPL", "")), null, emptyList())
+        val msg = vm.applyImport(p, replace = true, withSettings = false)
+        assertEquals(listOf("NVDA", "AAPL"), order(vm)); assertTrue(msg, "取代" in msg && "移除 2" in msg)
+        assertFalse(vm.analyses.value.containsKey("2330.TW")) // 被移除者的結果一併清掉
+        val msg2 = vm.applyImport(p, replace = false, withSettings = false)
+        assertTrue(msg2, "已加入 0 檔" in msg2 && "2 檔已存在" in msg2)
+        assertEquals(4, cur.size)
     }
 }

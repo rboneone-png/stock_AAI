@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -55,6 +56,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -70,6 +72,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -128,7 +131,10 @@ fun WatchlistScreen(vm: MainViewModel) {
     val settings by vm.settings.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    var more by remember { mutableStateOf(false) }
     var removing by remember { mutableStateOf<WatchItem?>(null) }
+    var reorder by rememberSaveable { mutableStateOf(false) }
+    val io = rememberImportExport(vm)
 
     fun scoreOf(i: WatchItem): Double = analyses[i.symbol]?.score ?: summaries[i.symbol]?.score ?: Double.NEGATIVE_INFINITY
     val sorted = when (settings.sort) {
@@ -136,18 +142,38 @@ fun WatchlistScreen(vm: MainViewModel) {
         "name" -> items.sortedBy { it.symbol }
         else -> items
     }
+    if (reorder) BackHandler { reorder = false }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(io.snackbar) },
         topBar = {
             TopAppBar(
-                title = { Text("自選股") },
+                title = { Text(if (reorder) "調整順序" else "自選股") },
                 actions = {
-                    IconButton({ vm.refreshAll() }, enabled = loading.isEmpty()) { Icon(Icons.Default.Refresh, "重新整理") }
-                    Box {
-                        TextButton({ menu = true }) { Text(when (settings.sort) { "score" -> "依評分"; "name" -> "依代號"; else -> "依加入順序" }) }
-                        DropdownMenu(menu, { menu = false }) {
-                            listOf("score" to "依評分", "name" to "依代號", "manual" to "依加入順序").forEach { (k, t) ->
-                                DropdownMenuItem({ Text(t) }, { menu = false; vm.updateSettings { it.copy(sort = k) } })
+                    if (reorder) {
+                        TextButton({ reorder = false }) { Text("完成") }
+                    } else {
+                        IconButton({ vm.refreshAll() }, enabled = loading.isEmpty()) { Icon(Icons.Default.Refresh, "重新整理") }
+                        Box {
+                            TextButton({ menu = true }) { Text(when (settings.sort) { "score" -> "依評分"; "name" -> "依代號"; else -> "手動排序" }) }
+                            DropdownMenu(menu, { menu = false }) {
+                                listOf("score" to "依評分", "name" to "依代號", "manual" to "手動排序").forEach { (k, t) ->
+                                    DropdownMenuItem({ Text(t) }, { menu = false; vm.updateSettings { it.copy(sort = k) } })
+                                }
+                            }
+                        }
+                        Box {
+                            IconButton({ more = true }, Modifier.testTag("more")) { Icon(Icons.Default.MoreVert, "更多") }
+                            DropdownMenu(more, { more = false }) {
+                                DropdownMenuItem({ Text("調整順序（拖曳排序）") }, {
+                                    more = false
+                                    if (items.size > 1) { vm.beginManualOrder(sorted); reorder = true }
+                                })
+                                HorizontalDivider()
+                                DropdownMenuItem({ Text("匯出（JSON，含設定）") }, { more = false; io.exportJson(true) })
+                                DropdownMenuItem({ Text("匯出（JSON，只有股票）") }, { more = false; io.exportJson(false) })
+                                DropdownMenuItem({ Text("匯出（文字清單 CSV）") }, { more = false; io.exportCsv() })
+                                DropdownMenuItem({ Text("匯入…") }, { more = false; io.pickFile() })
                             }
                         }
                     }
@@ -155,17 +181,22 @@ fun WatchlistScreen(vm: MainViewModel) {
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(text = { Text("新增股票") }, icon = { Icon(Icons.Default.Add, null) }, onClick = { showAdd = true })
+            if (!reorder) ExtendedFloatingActionButton(text = { Text("新增股票") }, icon = { Icon(Icons.Default.Add, null) }, onClick = { showAdd = true })
         },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            if (loading.isNotEmpty()) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (loading.isNotEmpty() && !reorder) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (items.isEmpty()) {
                 Column(Modifier.fillMaxSize().padding(32.dp), Arrangement.Center, Alignment.CenterHorizontally) {
                     Text("還沒有自選股", style = MaterialTheme.typography.titleMedium)
-                    Text("按右下角「新增股票」，輸入台股或美股的代號或名稱。", Modifier.padding(top = 8.dp),
+                    Text("按右下角「新增股票」，輸入台股或美股的代號或名稱；也可以從右上角選單匯入清單。", Modifier.padding(top = 8.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            } else if (reorder) {
+                ReorderList(
+                    sorted, analyses, summaries,
+                    onMove = { from, to -> vm.moveStock(from, to) },
+                )
             } else LazyColumn(
                 contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -178,7 +209,7 @@ fun WatchlistScreen(vm: MainViewModel) {
                     )
                 }
                 item {
-                    Text("長按股票可移除。分數 ≥20 偏多、≤-20 偏空；僅供研究參考，不構成投資建議。",
+                    Text("長按股票可移除；右上角選單可調整順序、匯入匯出。分數 ≥20 偏多、≤-20 偏空；僅供研究參考，不構成投資建議。",
                         Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -186,6 +217,7 @@ fun WatchlistScreen(vm: MainViewModel) {
         }
     }
     if (showAdd) AddStockSheet(vm) { showAdd = false }
+    io.Dialogs()
     removing?.let { r ->
         AlertDialog(
             onDismissRequest = { removing = null },
@@ -419,7 +451,7 @@ fun SettingsScreen(vm: MainViewModel, requestNotifications: () -> Unit) {
                 }
             }
             Section("關於") {
-                Text("股票主動分析 v1.0.0", fontWeight = FontWeight.Medium)
+                Text("股票主動分析 v1.1.0", fontWeight = FontWeight.Medium)
                 Text("以技術面多因子評分（趨勢、動能、KD、布林、量能、相對強弱）整合成 -100 ~ +100 分，並提供 ATR 停損、風險指標與歷史回測。\n\n" +
                     "本程式僅供研究與教育用途，不構成任何投資建議。投資有風險，請自行判斷並承擔損益。",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -63,32 +63,11 @@ class Store(ctx: Context) {
 
     // ---------------------------------------------------------------- 設定
     fun loadSettings(): Settings = try {
-        val o = JSONObject(sp.getString("settings", "{}")!!)
-        val d = Settings()
-        Settings(
-            o.optBoolean("monitorEnabled", d.monitorEnabled), o.optInt("intervalMin", d.intervalMin),
-            o.optBoolean("alertRating", d.alertRating), o.optBoolean("alertStopTarget", d.alertStopTarget),
-            o.optBoolean("alertMa60", d.alertMa60), o.optBoolean("alertHighLow", d.alertHighLow),
-            o.optBoolean("alertBigMove", d.alertBigMove), o.optDouble("bigMovePct", d.bigMovePct),
-            o.optBoolean("alertVolume", d.alertVolume), o.optDouble("capital", d.capital),
-            o.optDouble("riskPct", d.riskPct), o.optBoolean("redUp", d.redUp), o.optString("period", d.period),
-            o.optString("finmindToken", ""), o.optString("alphaKey", ""),
-            o.optString("disabledSources", "").split(",").filter { it.isNotBlank() }.toSet(),
-            o.optString("sort", d.sort),
-        )
+        settingsFromJson(JSONObject(sp.getString("settings", "{}")!!))
     } catch (_: Exception) { Settings() }
 
     fun saveSettings(s: Settings) {
-        val o = JSONObject()
-            .put("monitorEnabled", s.monitorEnabled).put("intervalMin", s.intervalMin)
-            .put("alertRating", s.alertRating).put("alertStopTarget", s.alertStopTarget)
-            .put("alertMa60", s.alertMa60).put("alertHighLow", s.alertHighLow)
-            .put("alertBigMove", s.alertBigMove).put("bigMovePct", s.bigMovePct)
-            .put("alertVolume", s.alertVolume).put("capital", s.capital).put("riskPct", s.riskPct)
-            .put("redUp", s.redUp).put("period", s.period).put("finmindToken", s.finmindToken)
-            .put("alphaKey", s.alphaKey).put("disabledSources", s.disabledSources.joinToString(","))
-            .put("sort", s.sort)
-        sp.edit().putString("settings", o.toString()).apply()
+        sp.edit().putString("settings", settingsToJson(s, includeSecrets = true).toString()).apply()
         applyToData(s)
     }
 
@@ -134,4 +113,35 @@ class Store(ctx: Context) {
         val a = JSONArray(); list.forEach { a.put(JSONObject().put("t", it.time).put("s", it.symbol).put("n", it.name).put("x", it.text)) }
         sp.edit().putString("events", a.toString()).apply()
     }
+}
+
+/** 設定 ↔ JSON。匯出時 includeSecrets=false，不會輸出 FinMind / Alpha Vantage 金鑰。 */
+fun settingsToJson(s: Settings, includeSecrets: Boolean): JSONObject {
+    val o = JSONObject()
+        .put("monitorEnabled", s.monitorEnabled).put("intervalMin", s.intervalMin)
+        .put("alertRating", s.alertRating).put("alertStopTarget", s.alertStopTarget)
+        .put("alertMa60", s.alertMa60).put("alertHighLow", s.alertHighLow)
+        .put("alertBigMove", s.alertBigMove).put("bigMovePct", s.bigMovePct)
+        .put("alertVolume", s.alertVolume).put("capital", s.capital).put("riskPct", s.riskPct)
+        .put("redUp", s.redUp).put("period", s.period)
+        .put("disabledSources", s.disabledSources.joinToString(","))
+        .put("sort", s.sort)
+    if (includeSecrets) o.put("finmindToken", s.finmindToken).put("alphaKey", s.alphaKey)
+    return o
+}
+
+fun settingsFromJson(o: JSONObject): Settings {
+    val d = Settings()
+    return Settings(
+        o.optBoolean("monitorEnabled", d.monitorEnabled), o.optInt("intervalMin", d.intervalMin).coerceIn(15, 1440),
+        o.optBoolean("alertRating", d.alertRating), o.optBoolean("alertStopTarget", d.alertStopTarget),
+        o.optBoolean("alertMa60", d.alertMa60), o.optBoolean("alertHighLow", d.alertHighLow),
+        o.optBoolean("alertBigMove", d.alertBigMove), o.optDouble("bigMovePct", d.bigMovePct).takeIf { it > 0 } ?: d.bigMovePct,
+        o.optBoolean("alertVolume", d.alertVolume), o.optDouble("capital", d.capital).takeIf { it > 0 } ?: d.capital,
+        o.optDouble("riskPct", d.riskPct).takeIf { it > 0 }?.coerceAtMost(20.0) ?: d.riskPct,
+        o.optBoolean("redUp", d.redUp), o.optString("period", d.period).takeIf { it in setOf("1y", "2y", "3y") } ?: d.period,
+        o.optString("finmindToken", ""), o.optString("alphaKey", ""),
+        o.optString("disabledSources", "").split(",").filter { it.isNotBlank() }.toSet(),
+        o.optString("sort", d.sort).takeIf { it in setOf("score", "name", "manual") } ?: d.sort,
+    )
 }
